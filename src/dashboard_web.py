@@ -1,19 +1,12 @@
 import os
 import sqlite3
-from flask import Flask, jsonify, render_template_string, request
-
-# -------------------------------------------------
-# Flask App
-# -------------------------------------------------
+from flask import Flask, jsonify, render_template_string, request, send_file
 
 app = Flask(__name__)
 
-# -------------------------------------------------
-# Database Setup
-# -------------------------------------------------
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "data", "sih.db")
+LATEST_FRAME_PATH = os.path.join(BASE_DIR, "data", "latest_frame.jpg")
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -21,7 +14,6 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 def create_database():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS meal_monitoring (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +25,6 @@ def create_database():
             sync_status INTEGER DEFAULT 0
         )
     """)
-
     conn.commit()
     conn.close()
 
@@ -41,288 +32,195 @@ def create_database():
 create_database()
 
 
-# -------------------------------------------------
-# Get Dashboard Data
-# -------------------------------------------------
-
-def get_data():
-    create_database()
-
+def get_dashboard_data():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT timestamp, person_count, plate_count, meal_status, scheduled_meal
-        FROM meal_monitoring
-        ORDER BY id DESC
-        LIMIT 1
-    """)
-    latest = cursor.fetchone()
+    cursor.execute("SELECT person_count, plate_count, scheduled_meal, meal_status, timestamp FROM meal_monitoring ORDER BY id DESC LIMIT 1")
+    last_record = cursor.fetchone()
 
-    cursor.execute("""
-        SELECT COALESCE(SUM(person_count), 0)
-        FROM meal_monitoring
-    """)
-    total_students = cursor.fetchone()[0]
+    cursor.execute("SELECT SUM(person_count) FROM meal_monitoring")
+    total_students = cursor.fetchone()[0] or 0
 
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM meal_monitoring
-        WHERE meal_status = 'MEAL_OK'
-    """)
-    successful_meals = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM meal_monitoring WHERE meal_status = 'MEAL_VERIFIED'")
+    successful_meals = cursor.fetchone()[0] or 0
 
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM meal_monitoring
-        WHERE sync_status = 0
-    """)
-    pending_sync = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM meal_monitoring WHERE sync_status = 0")
+    pending_sync = cursor.fetchone()[0] or 0
 
     conn.close()
 
-    if latest:
-        timestamp = latest[0]
-        person_count = latest[1]
-        plate_count = latest[2]
-        meal_status = latest[3]
-        scheduled_meal = latest[4] if latest[4] else "Not specified"
-    else:
-        timestamp = "No detection yet"
-        person_count = 0
-        plate_count = None
-        meal_status = "NO_DATA"
-        scheduled_meal = "Not specified"
+    if last_record:
+        return {
+            "students_detected": last_record[0],
+            "plates_detected": last_record[1],
+            "scheduled_meal": last_record[2],
+            "meal_status": last_record[3],
+            "last_detection": last_record[4],
+            "total_students": total_students,
+            "successful_meals": successful_meals,
+            "pending_sync": pending_sync,
+        }
 
     return {
-        "timestamp": timestamp,
-        "person_count": person_count,
-        "plate_count": plate_count,
-        "total_students": total_students,
-        "successful_meals": successful_meals,
-        "meal_status": meal_status,
-        "scheduled_meal": scheduled_meal,
-        "pending_sync": pending_sync,
+        "students_detected": 0,
+        "plates_detected": "Pending",
+        "scheduled_meal": "Not specified",
+        "meal_status": "NO DATA",
+        "last_detection": "No detection yet",
+        "total_students": 0,
+        "successful_meals": 0,
+        "pending_sync": 0,
     }
 
 
-# -------------------------------------------------
-# Dashboard HTML
-# -------------------------------------------------
-
-HTML = """
+HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SIH Meal Monitoring</title>
     <style>
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #f4f6f8;
-            color: #222;
-        }
-        .header {
-            background: #111827;
-            color: white;
-            padding: 22px;
-            text-align: center;
-        }
-        .header h1 { margin: 0; font-size: 28px; }
-        .header p { margin: 7px 0 0; opacity: 0.8; }
-        .container {
-            max-width: 1100px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 20px;
-        }
-        .card {
-            background: white;
-            border-radius: 14px;
-            padding: 24px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-        }
-        .card h3 { margin: 0 0 10px; color: #555; font-size: 15px; }
-        .value { font-size: 32px; font-weight: bold; }
-        .section { margin-top: 25px; }
-        .status {
-            padding: 18px;
-            border-radius: 12px;
-            background: white;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-        }
-        .status h2 { margin-top: 0; }
-        .info { margin: 10px 0; font-size: 17px; }
-        .pending { color: #d97706; font-weight: bold; }
-        .success { color: #16a34a; font-weight: bold; }
-        .danger { color: #dc2626; font-weight: bold; }
-        .footer {
-            text-align: center;
-            margin-top: 40px;
-            padding: 20px;
-            color: #777;
-            font-size: 14px;
-        }
-        .refresh {
-            display: inline-block;
-            margin-top: 15px;
-            padding: 10px 18px;
-            background: #2563eb;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b1120; color: #f8fafc; margin: 0; padding: 16px; }
+        .header { text-align: center; margin-bottom: 24px; }
+        .header h1 { margin: 0; font-size: 22px; color: #38bdf8; }
+        .header p { margin: 4px 0 0 0; font-size: 12px; color: #94a3b8; }
+        .container { max-width: 720px; margin: 0 auto; }
+        
+        .camera-card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 20px; border: 1px solid #334155; text-align: center; }
+        .camera-card h3 { margin: 0 0 10px 0; font-size: 13px; color: #38bdf8; text-transform: uppercase; text-align: left; letter-spacing: 0.5px; }
+        .camera-feed { width: 100%; max-height: 400px; object-fit: contain; border-radius: 8px; background: #020617; border: 1px solid #475569; }
+        
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .card { background: #1e293b; border-radius: 10px; padding: 14px; border: 1px solid #334155; }
+        .card h4 { margin: 0 0 6px 0; font-size: 11px; color: #94a3b8; text-transform: uppercase; }
+        .card p { margin: 0; font-size: 22px; font-weight: bold; color: #f8fafc; }
+        
+        .section { background: #1e293b; border-radius: 10px; padding: 14px; margin-bottom: 12px; border: 1px solid #334155; }
+        .section-title { font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px; }
+        .section-value { font-size: 16px; font-weight: 600; }
+        
+        .btn { display: block; width: 100%; text-align: center; background: #2563eb; color: white; padding: 12px; border-radius: 8px; font-size: 14px; font-weight: 600; border: none; cursor: pointer; text-decoration: none; margin-top: 16px; }
+        .btn:active { background: #1d4ed8; }
+        .footer { text-align: center; margin-top: 24px; font-size: 11px; color: #64748b; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>SIH Meal Monitoring</h1>
-        <p>Intelligent Computer Vision System for Mid-Day Meal Monitoring</p>
-    </div>
     <div class="container">
+        <div class="header">
+            <h1>SIH Meal Monitoring</h1>
+            <p>Intelligent Computer Vision System for Mid-Day Meal Monitoring</p>
+        </div>
+
+        <!-- Live Camera Stream Visual -->
+        <div class="camera-card">
+            <h3>Live Edge Camera Feed (AI Detections)</h3>
+            <img class="camera-feed" id="liveFrame" src="/api/latest_image" alt="Awaiting Live Edge Camera Stream...">
+            <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;">Auto-updates as continuous monitoring detects students & plates</p>
+        </div>
+
         <div class="grid">
             <div class="card">
-                <h3>Students Detected</h3>
-                <div class="value">{{ data.person_count }}</div>
+                <h4>Students Detected</h4>
+                <p>{{ data.students_detected }}</p>
             </div>
             <div class="card">
-                <h3>Plates Detected</h3>
-                <div class="value">
-                    {% if data.plate_count is none %}
-                        <span class="pending">Pending</span>
-                    {% else %}
-                        {{ data.plate_count }}
-                    {% endif %}
-                </div>
+                <h4>Plates Detected</h4>
+                <p>{{ data.plates_detected }}</p>
             </div>
             <div class="card">
-                <h3>Total Students</h3>
-                <div class="value">{{ data.total_students }}</div>
+                <h4>Total Students</h4>
+                <p>{{ data.total_students }}</p>
             </div>
             <div class="card">
-                <h3>Successful Meals</h3>
-                <div class="value">{{ data.successful_meals }}</div>
+                <h4>Successful Meals</h4>
+                <p>{{ data.successful_meals }}</p>
             </div>
         </div>
 
         <div class="section">
-            <div class="status">
-                <h2>Today's Scheduled Meal</h2>
-                <div class="info">🍲 {{ data.scheduled_meal }}</div>
+            <div class="section-title">Today's Scheduled Meal</div>
+            <div class="section-value">🍲 {{ data.scheduled_meal }}</div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Meal Status</div>
+            <div class="section-value" style="color: {% if data.meal_status == 'MEAL_VERIFIED' %}#4ade80{% else %}#f87171{% endif %};">
+                {{ data.meal_status }}
             </div>
         </div>
 
         <div class="section">
-            <div class="status">
-                <h2>Meal Status</h2>
-                <div class="info">
-                    {% if data.meal_status == "MEAL_OK" %}
-                        <span class="success">✓ MEAL OK</span>
-                    {% elif data.meal_status == "MEAL_INCOMPLETE" %}
-                        <span class="danger">⚠ MEAL INCOMPLETE</span>
-                    {% elif data.meal_status == "NO_STUDENTS" %}
-                        <span class="danger">NO STUDENTS</span>
-                    {% elif data.meal_status == "NO_DATA" %}
-                        <span class="pending">NO DATA</span>
-                    {% else %}
-                        <span class="pending">{{ data.meal_status }}</span>
-                    {% endif %}
-                </div>
-            </div>
+            <div class="section-title">Last Detection Timestamp</div>
+            <div class="section-value" style="font-size: 13px; color: #cbd5e1;">{{ data.last_detection }}</div>
         </div>
 
-        <div class="section">
-            <div class="status">
-                <h2>Synchronization</h2>
-                <div class="info">
-                    {% if data.pending_sync > 0 %}
-                        <span class="pending">{{ data.pending_sync }} record(s) pending sync</span>
-                    {% else %}
-                        <span class="success">✓ All records synced</span>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-
-        <div class="section">
-            <div class="status">
-                <h2>Last Detection</h2>
-                <div class="info">{{ data.timestamp }}</div>
-                <a class="refresh" href="/">Refresh Dashboard</a>
-            </div>
-        </div>
+        <button class="btn" onclick="location.reload()">Refresh Dashboard</button>
 
         <div class="footer">
-            Atul Goswami<br>
-            Offline-first Meal Monitoring System
+            Atul Goswami<br>Offline-first Meal Monitoring System
         </div>
     </div>
+
+    <script>
+        // Auto refresh image every 4 seconds
+        setInterval(function() {
+            var img = document.getElementById('liveFrame');
+            if (img) {
+                img.src = '/api/latest_image?t=' + new Date().getTime();
+            }
+        }, 4000);
+    </script>
 </body>
 </html>
 """
 
 
-# -------------------------------------------------
-# Routes
-# -------------------------------------------------
-
 @app.route("/")
-def dashboard():
-    data = get_data()
-    return render_template_string(HTML, data=data)
+def index():
+    data = get_dashboard_data()
+    return render_template_string(HTML_TEMPLATE, data=data)
 
 
-@app.route("/health")
-def health():
-    return {
-        "status": "ok",
-        "database": os.path.exists(DB_PATH),
-    }
+@app.route("/api/upload_frame", methods=["POST"])
+def upload_frame():
+    if "image" not in request.files:
+        return jsonify({"status": "error", "message": "No image sent"}), 400
+    file = request.files["image"]
+    os.makedirs(os.path.dirname(LATEST_FRAME_PATH), exist_ok=True)
+    file.save(LATEST_FRAME_PATH)
+    return jsonify({"status": "success", "message": "Frame uploaded successfully"}), 200
+
+
+@app.route("/api/latest_image")
+def latest_image():
+    if os.path.exists(LATEST_FRAME_PATH):
+        return send_file(LATEST_FRAME_PATH, mimetype="image/jpeg")
+    # Fallback to local outputs if exists
+    fallback = os.path.join(BASE_DIR, "outputs", "detected.jpg")
+    if os.path.exists(fallback):
+        return send_file(fallback, mimetype="image/jpeg")
+    return jsonify({"status": "no image available"}), 404
 
 
 @app.route("/api/sync", methods=["POST"])
-def sync_records():
-    payload = request.get_json(silent=True)
-    if not payload or "records" not in payload:
-        return jsonify({"error": "Invalid payload, 'records' field required"}), 400
-
-    records = payload["records"]
-    if not isinstance(records, list):
-        return jsonify({"error": "'records' must be a list"}), 400
+def sync():
+    records = request.get_json()
+    if not records:
+        return jsonify({"status": "error", "message": "No data received"}), 400
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
-    synced_ids = []
     for r in records:
         cursor.execute("""
-            INSERT INTO meal_monitoring (timestamp, person_count, plate_count, meal_status, scheduled_meal, sync_status)
+            INSERT INTO meal_monitoring (timestamp, person_count, plate_count, scheduled_meal, meal_status, sync_status)
             VALUES (?, ?, ?, ?, ?, 1)
-        """, (
-            r.get("timestamp"),
-            r.get("person_count"),
-            r.get("plate_count"),
-            r.get("meal_status"),
-            r.get("scheduled_meal", "Not specified"),
-        ))
-        synced_ids.append(r.get("id"))
-
+        """, (r["timestamp"], r["person_count"], r["plate_count"], r["scheduled_meal"], r["meal_status"]))
     conn.commit()
     conn.close()
-
-    return jsonify({"status": "success", "synced_ids": synced_ids, "count": len(synced_ids)}), 200
+    return jsonify({"status": "success", "synced_records": len(records)}), 200
 
 
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
-        debug=False,
-    )
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
