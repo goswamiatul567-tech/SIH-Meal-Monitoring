@@ -454,7 +454,7 @@ HTML = """
 
         <div class="footer">
 
-            SIH 2025 • Team NextGen<br>
+            Atul Goswami<br>
 
             Offline-first Meal Monitoring System
 
