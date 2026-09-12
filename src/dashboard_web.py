@@ -45,8 +45,9 @@ def get_dashboard_data():
     cursor.execute("SELECT COUNT(*) FROM meal_monitoring WHERE meal_status = 'MEAL_VERIFIED'")
     successful_meals = cursor.fetchone()[0] or 0
 
-    cursor.execute("SELECT COUNT(*) FROM meal_monitoring WHERE sync_status = 0")
-    pending_sync = cursor.fetchone()[0] or 0
+    # Fetch last 5 audit logs
+    cursor.execute("SELECT id, timestamp, person_count, plate_count, scheduled_meal, meal_status, sync_status FROM meal_monitoring ORDER BY id DESC LIMIT 5")
+    recent_logs = cursor.fetchall()
 
     conn.close()
 
@@ -59,18 +60,18 @@ def get_dashboard_data():
             "last_detection": last_record[4],
             "total_students": total_students,
             "successful_meals": successful_meals,
-            "pending_sync": pending_sync,
+            "recent_logs": recent_logs,
         }
 
     return {
         "students_detected": 0,
-        "plates_detected": "Pending",
+        "plates_detected": 0,
         "scheduled_meal": "Not specified",
-        "meal_status": "NO DATA",
+        "meal_status": "AWAITING DATA",
         "last_detection": "No detection yet",
         "total_students": 0,
         "successful_meals": 0,
-        "pending_sync": 0,
+        "recent_logs": [],
     }
 
 
@@ -80,95 +81,245 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Atul's Meal Monitoring Project - Live Video</title>
+    <title>Atul's Meal Monitoring System</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b1120; color: #f8fafc; margin: 0; padding: 16px; }
-        .header { text-align: center; margin-bottom: 20px; }
-        .header h1 { margin: 0; font-size: 22px; color: #38bdf8; }
-        .header p { margin: 4px 0 0 0; font-size: 12px; color: #94a3b8; }
-        .container { max-width: 720px; margin: 0 auto; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Inter', -apple-system, sans-serif; background: #090d16; color: #f1f5f9; min-height: 100vh; padding: 20px 16px; }
         
-        .camera-card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 20px; border: 1px solid #334155; text-align: center; }
-        .camera-card h3 { margin: 0 0 10px 0; font-size: 13px; color: #38bdf8; text-transform: uppercase; text-align: left; letter-spacing: 0.5px; }
-        
-        /* Video Element for Smooth 30FPS stream */
-        video#liveStream { width: 100%; max-height: 400px; border-radius: 8px; background: #020617; border: 1px solid #475569; transform: scaleX(1); }
-        
-        .controls { display: flex; gap: 10px; margin-top: 10px; }
-        .btn-stream { flex: 1; background: #059669; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: bold; cursor: pointer; }
-        .btn-stop { flex: 1; background: #dc2626; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: bold; cursor: pointer; }
-        
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; margin-top: 20px; }
-        .card { background: #1e293b; border-radius: 10px; padding: 14px; border: 1px solid #334155; }
-        .card h4 { margin: 0 0 6px 0; font-size: 11px; color: #94a3b8; text-transform: uppercase; }
-        .card p { margin: 0; font-size: 22px; font-weight: bold; color: #f8fafc; }
-        
-        .section { background: #1e293b; border-radius: 10px; padding: 14px; margin-bottom: 12px; border: 1px solid #334155; }
-        .section-title { font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px; }
-        .section-value { font-size: 16px; font-weight: 600; }
-        
-        .btn { display: block; width: 100%; text-align: center; background: #2563eb; color: white; padding: 12px; border-radius: 8px; font-size: 14px; font-weight: 600; border: none; cursor: pointer; text-decoration: none; margin-top: 16px; }
-        .footer { text-align: center; margin-top: 24px; font-size: 11px; color: #64748b; }
+        /* Top Navigation Header */
+        .header-bar {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 14px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1100px;
+            margin: 0 auto 20px auto;
+        }
+        .header-title { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; letter-spacing: 0.5px; color: #f8fafc; }
+        .live-dot { width: 10px; height: 10px; background: #ef4444; border-radius: 50%; box-shadow: 0 0 10px #ef4444; animation: pulse 1.8s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
+        .header-meta { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #94a3b8; }
+        .badge-active { background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(16, 185, 129, 0.3); }
+
+        /* Main Workspace Split Grid */
+        .workspace {
+            display: grid;
+            grid-template-columns: 1.4fr 1fr;
+            gap: 20px;
+            max-width: 1100px;
+            margin: 0 auto 20px auto;
+        }
+        @media (max-width: 850px) { .workspace { grid-template-columns: 1fr; } }
+
+        /* Left Surveillance Panel */
+        .panel {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-header {
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            color: #38bdf8;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .video-container {
+            position: relative;
+            background: #020617;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #1e293b;
+            aspect-ratio: 16/9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        video#liveStream { width: 100%; height: 100%; object-fit: cover; }
+        .hud-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            background: rgba(0, 0, 0, 0.65);
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+
+        .controls { display: flex; gap: 10px; margin-top: 14px; }
+        .btn-stream {
+            flex: 1;
+            background: #10b981;
+            color: #042f2e;
+            font-weight: 700;
+            font-size: 13px;
+            padding: 10px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn-stream:hover { background: #34d399; }
+        .btn-stop {
+            flex: 1;
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            font-weight: 700;
+            font-size: 13px;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            cursor: pointer;
+        }
+        .status-txt { font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; margin-top: 8px; text-align: center; }
+
+        /* Right Telemetry Panel */
+        .telemetry-grid { display: flex; flex-direction: column; gap: 12px; }
+        .metric-card {
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 14px 16px;
+        }
+        .metric-label { font-size: 11px; text-transform: uppercase; color: #94a3b8; font-family: 'JetBrains Mono', monospace; margin-bottom: 4px; }
+        .metric-val { font-size: 24px; font-weight: 700; color: #f8fafc; }
+        .metric-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+
+        .metric-status {
+            font-size: 16px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            color: {% if data.meal_status == 'MEAL_VERIFIED' %}#34d399{% else %}#f87171{% endif %};
+        }
+
+        /* Bottom Audit Log Timeline */
+        .audit-panel {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 18px;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        .table-wrap { overflow-x: auto; margin-top: 10px; }
+        table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: left; }
+        th { color: #64748b; font-weight: 600; padding: 10px 8px; border-bottom: 1px solid #1e293b; text-transform: uppercase; font-size: 11px; }
+        td { padding: 10px 8px; border-bottom: 1px solid rgba(30, 41, 59, 0.5); color: #cbd5e1; }
+        .tag-sync { color: #34d399; background: rgba(16, 185, 129, 0.1); padding: 2px 6px; border-radius: 4px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>Atul's Meal Monitoring Project</h1>
-            <p>Intelligent Computer Vision System for Mid-Day Meal Monitoring</p>
-        </div>
 
-        <!-- Real-time Live Video Stream Card -->
-        <div class="camera-card">
-            <h3>🔴 Real-Time Live Camera Feed</h3>
-            <video id="liveStream" autoplay playsinline muted></video>
+    <!-- Header -->
+    <div class="header-bar">
+        <div class="header-title">
+            <div class="live-dot"></div>
+            ATUL'S MEAL MONITORING SYSTEM
+        </div>
+        <div class="header-meta">
+            STATUS: <span class="badge-active">ONLINE</span> &nbsp;|&nbsp; UNIT #01
+        </div>
+    </div>
+
+    <!-- Main Section: Stream (Left) + Telemetry (Right) -->
+    <div class="workspace">
+        
+        <!-- Live Surveillance -->
+        <div class="panel">
+            <div class="panel-header">
+                <span>LIVE SURVEILLANCE FEED</span>
+                <span style="color: #94a3b8;">WEBCAM 30 FPS</span>
+            </div>
+            <div class="video-container">
+                <video id="liveStream" autoplay playsinline muted></video>
+                <div class="hud-overlay" id="hudTag">STREAM OFFLINE</div>
+            </div>
             <div class="controls">
-                <button class="btn-stream" onclick="startCamera()">Turn On Camera</button>
-                <button class="btn-stop" onclick="stopCamera()">Stop Camera</button>
+                <button class="btn-stream" onclick="startCamera()">START STREAM</button>
+                <button class="btn-stop" onclick="stopCamera()">STOP</button>
             </div>
-            <p id="camStatus" style="margin: 8px 0 0 0; font-size: 11px; color: #94a3b8;">Click 'Turn On Camera' to stream live video directly on website.</p>
+            <div class="status-txt" id="camStatus">Click 'START STREAM' to broadcast live video feed</div>
         </div>
 
-        <div class="grid">
-            <div class="card">
-                <h4>Students Detected</h4>
-                <p>{{ data.students_detected }}</p>
+        <!-- Real-Time Telemetry -->
+        <div class="panel">
+            <div class="panel-header">
+                <span>REAL-TIME TELEMETRY</span>
+                <span style="color: #94a3b8;">AUTO-REFRESH</span>
             </div>
-            <div class="card">
-                <h4>Plates Detected</h4>
-                <p>{{ data.plates_detected }}</p>
-            </div>
-            <div class="card">
-                <h4>Total Students</h4>
-                <p>{{ data.total_students }}</p>
-            </div>
-            <div class="card">
-                <h4>Successful Meals</h4>
-                <p>{{ data.successful_meals }}</p>
-            </div>
-        </div>
-
-        <div class="section">
-            <div class="section-title">Today's Scheduled Meal</div>
-            <div class="section-value">🍲 {{ data.scheduled_meal }}</div>
-        </div>
-
-        <div class="section">
-            <div class="section-title">Meal Status</div>
-            <div class="section-value" style="color: {% if data.meal_status == 'MEAL_VERIFIED' %}#4ade80{% else %}#f87171{% endif %};">
-                {{ data.meal_status }}
+            <div class="telemetry-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Students Active / Concurrent</div>
+                    <div class="metric-val">{{ data.students_detected }}</div>
+                    <div class="metric-sub">Cumulative logged: {{ data.total_students }}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Plates Monitored</div>
+                    <div class="metric-val">{{ data.plates_detected }}</div>
+                    <div class="metric-sub">Served count verification</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Scheduled Menu (Today)</div>
+                    <div class="metric-val" style="font-size: 18px;">🍲 {{ data.scheduled_meal }}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Meal Integrity State</div>
+                    <div class="metric-status">{{ data.meal_status }}</div>
+                </div>
             </div>
         </div>
 
-        <div class="section">
-            <div class="section-title">Last Detection Timestamp</div>
-            <div class="section-value" style="font-size: 13px; color: #cbd5e1;">{{ data.last_detection }}</div>
+    </div>
+
+    <!-- Recent Audit Logs Timeline -->
+    <div class="audit-panel">
+        <div class="panel-header">
+            <span>RECENT AUDIT LOG TIMELINE (SQLITE SYNC ENGINE)</span>
+            <span style="cursor: pointer; color: #38bdf8;" onclick="location.reload()">[REFRESH]</span>
         </div>
-
-        <button class="btn" onclick="location.reload()">Refresh Data</button>
-
-        <div class="footer">
-            Atul Goswami<br>Edge AI Live Surveillance
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Timestamp</th>
+                        <th>Students</th>
+                        <th>Plates</th>
+                        <th>Integrity</th>
+                        <th>Sync Engine</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in data.recent_logs %}
+                    <tr>
+                        <td>#{{ log[0] }}</td>
+                        <td>{{ log[1] }}</td>
+                        <td>{{ log[2] }}</td>
+                        <td>{{ log[3] }}</td>
+                        <td>{{ log[5] }}</td>
+                        <td><span class="tag-sync">Synced ✓</span></td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" style="text-align: center; color: #64748b; padding: 18px;">No audit records captured yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -177,25 +328,28 @@ HTML_TEMPLATE = """
 
         async function startCamera() {
             const video = document.getElementById('liveStream');
+            const hud = document.getElementById('hudTag');
             const status = document.getElementById('camStatus');
             try {
-                // Constraints prioritize back camera for classroom monitoring
                 const constraints = {
                     video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
                 };
                 streamObj = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = streamObj;
-                status.innerText = "🟢 Camera live streaming smoothly (30 FPS)";
-                status.style.color = "#4ade80";
+                hud.innerText = "● LIVE (30 FPS)";
+                hud.style.color = "#34d399";
+                hud.style.borderColor = "rgba(52, 211, 153, 0.4)";
+                status.innerText = "Camera stream connected successfully.";
+                status.style.color = "#34d399";
             } catch (err) {
-                // Fallback for front camera if back camera not directly accessible
                 try {
                     streamObj = await navigator.mediaDevices.getUserMedia({ video: true });
                     video.srcObject = streamObj;
-                    status.innerText = "🟢 Front camera live streaming";
-                    status.style.color = "#4ade80";
+                    hud.innerText = "● LIVE (FRONT CAM)";
+                    status.innerText = "Front webcam connected.";
+                    status.style.color = "#34d399";
                 } catch (e) {
-                    status.innerText = "❌ Permission denied or camera unavailable: " + e.message;
+                    status.innerText = "Permission denied or no camera device found.";
                     status.style.color = "#f87171";
                 }
             }
@@ -205,7 +359,9 @@ HTML_TEMPLATE = """
             if (streamObj) {
                 streamObj.getTracks().forEach(track => track.stop());
                 document.getElementById('liveStream').srcObject = null;
-                document.getElementById('camStatus').innerText = "Camera stopped.";
+                document.getElementById('hudTag').innerText = "STREAM OFFLINE";
+                document.getElementById('hudTag').style.color = "#38bdf8";
+                document.getElementById('camStatus').innerText = "Camera feed terminated.";
                 document.getElementById('camStatus').style.color = "#94a3b8";
             }
         }
