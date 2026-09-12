@@ -1,4 +1,5 @@
 import csv
+import datetime
 import io
 import os
 import sqlite3
@@ -11,6 +12,22 @@ DB_PATH = os.path.join(BASE_DIR, "data", "sih.db")
 LATEST_FRAME_PATH = os.path.join(BASE_DIR, "data", "latest_frame.jpg")
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+# Official Mid-Day Meal Weekly Roster
+WEEKLY_ROSTER = {
+    0: "Roti, Dal & Green Vegetables",      # Monday
+    1: "Rice, Chana Dal & Seasonal Veg",    # Tuesday
+    2: "Khichdi with Boiled Egg / Fruit",   # Wednesday
+    3: "Roti, Soya Curry & Mixed Dal",      # Thursday
+    4: "Rice, Dal & Sabzi",                 # Friday
+    5: "Khichdi & Mixed Pickle",            # Saturday
+    6: "Sunday Holiday - No Meal Scheduled" # Sunday
+}
+
+
+def get_today_meal():
+    day_idx = datetime.datetime.now().weekday()
+    return WEEKLY_ROSTER.get(day_idx, "Nutritional Supplementary Meal")
 
 
 def create_database():
@@ -47,32 +64,51 @@ def get_dashboard_data():
     cursor.execute("SELECT COUNT(*) FROM meal_monitoring WHERE meal_status = 'MEAL_VERIFIED'")
     successful_meals = cursor.fetchone()[0] or 0
 
-    # Fetch last 8 audit logs
+    # Last 8 Audit ledger logs
     cursor.execute("SELECT id, timestamp, person_count, plate_count, scheduled_meal, meal_status, sync_status FROM meal_monitoring ORDER BY id DESC LIMIT 8")
     recent_logs = cursor.fetchall()
 
-    # Fetch last recorded session (previous record)
+    # Previous session details
     cursor.execute("SELECT timestamp, person_count, plate_count, scheduled_meal, meal_status FROM meal_monitoring ORDER BY id DESC LIMIT 1 OFFSET 1")
     prev_session = cursor.fetchone()
 
     conn.close()
 
+    default_meal = get_today_meal()
+
+    if last_record:
+        rec_meal = last_record[2]
+        if not rec_meal or rec_meal == "Not specified":
+            rec_meal = default_meal
+
+        return {
+            "students_detected": last_record[0],
+            "plates_detected": last_record[1],
+            "scheduled_meal": rec_meal,
+            "meal_status": last_record[3],
+            "last_detection": last_record[4],
+            "total_students": total_students,
+            "successful_meals": successful_meals,
+            "recent_logs": recent_logs,
+            "prev_session": {
+                "timestamp": prev_session[0],
+                "students": prev_session[1],
+                "plates": prev_session[2],
+                "meal": prev_session[3] or default_meal,
+                "status": prev_session[4]
+            } if prev_session else None
+        }
+
     return {
-        "students_detected": last_record[0] if last_record else 0,
-        "plates_detected": last_record[1] if last_record else 0,
-        "scheduled_meal": last_record[2] if last_record else "Not specified",
-        "meal_status": last_record[3] if last_record else "AWAITING DATA",
-        "last_detection": last_record[4] if last_record else "No detection yet",
-        "total_students": total_students,
-        "successful_meals": successful_meals,
-        "recent_logs": recent_logs,
-        "prev_session": {
-            "timestamp": prev_session[0],
-            "students": prev_session[1],
-            "plates": prev_session[2],
-            "meal": prev_session[3],
-            "status": prev_session[4]
-        } if prev_session else None
+        "students_detected": 0,
+        "plates_detected": 0,
+        "scheduled_meal": default_meal,
+        "meal_status": "AWAITING LIVE AUDIT",
+        "last_detection": "System Armed - Ready",
+        "total_students": 0,
+        "successful_meals": 0,
+        "recent_logs": [],
+        "prev_session": None
     }
 
 
@@ -120,7 +156,7 @@ HTML_TEMPLATE = """
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 8px;
             box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-            min-width: 220px;
+            min-width: 230px;
             z-index: 100;
         }
         .dropdown-content a {
@@ -135,7 +171,7 @@ HTML_TEMPLATE = """
         }
         .dropdown-content a:hover { background: rgba(56, 189, 248, 0.1); color: #38bdf8; }
 
-        /* Main Workspace */
+        /* Workspace Grid */
         .workspace { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; max-width: 1100px; margin: 0 auto 20px auto; }
         @media (max-width: 850px) { .workspace { grid-template-columns: 1fr; } }
 
@@ -159,12 +195,12 @@ HTML_TEMPLATE = """
         .metric-status { font-size: 16px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: {% if data.meal_status == 'MEAL_VERIFIED' %}#34d399{% else %}#f87171{% endif %}; }
 
         /* Modal styling */
-        .modal { display: none; position: fixed; z-index: 200; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
-        .modal-content { background: #1e293b; margin: 10% auto; padding: 24px; border-radius: 12px; max-width: 480px; border: 1px solid rgba(255,255,255,0.1); }
-        .modal-header { font-size: 16px; font-weight: 700; color: #38bdf8; margin-bottom: 16px; display: flex; justify-content: space-between; }
-        .close-btn { color: #94a3b8; cursor: pointer; font-size: 18px; }
+        .modal { display: none; position: fixed; z-index: 200; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); }
+        .modal-content { background: #1e293b; margin: 12% auto; padding: 24px; border-radius: 12px; max-width: 480px; border: 1px solid rgba(255,255,255,0.12); }
+        .modal-header { font-size: 15px; font-weight: 700; color: #38bdf8; margin-bottom: 16px; display: flex; justify-content: space-between; }
+        .close-btn { color: #94a3b8; cursor: pointer; font-size: 20px; }
 
-        /* Bottom Audit Log */
+        /* Audit Panel */
         .audit-panel { background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; padding: 18px; max-width: 1100px; margin: 0 auto; }
         .table-wrap { overflow-x: auto; margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: left; }
@@ -186,14 +222,14 @@ HTML_TEMPLATE = """
             <div id="dropdownMenu" class="dropdown-content">
                 <a onclick="openLastSessionModal()">📑 View Last Session Report</a>
                 <a href="/api/export_csv">📥 Export Audit Logs (CSV)</a>
-                <a onclick="alert('Threshold: Confidence 0.40 | IoU 0.45 (Optimal Edge NMS)')">⚙️ Model Parameters</a>
+                <a onclick="alert('Thresholds:\\n- Confidence: 0.40\\n- NMS IoU: 0.45\\n- Edge Persistence: SQLite Atomic Lock')">⚙️ View Model Parameters</a>
                 <a onclick="location.reload()">🔄 Force Telemetry Sync</a>
             </div>
         </div>
     </div>
 
-    <!-- Main Workspace -->
     <div class="workspace">
+        <!-- Live Surveillance Panel -->
         <div class="panel">
             <div class="panel-header">
                 <span>LIVE SURVEILLANCE FEED</span>
@@ -210,6 +246,7 @@ HTML_TEMPLATE = """
             <div class="status-txt" id="camStatus">Ready to capture live classroom frames</div>
         </div>
 
+        <!-- Telemetry Panel -->
         <div class="panel">
             <div class="panel-header">
                 <span>REAL-TIME TELEMETRY</span>
@@ -228,7 +265,7 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Scheduled Menu (Today)</div>
-                    <div class="metric-val" style="font-size: 18px;">🍲 {{ data.scheduled_meal }}</div>
+                    <div class="metric-val" style="font-size: 17px; color: #38bdf8;">🍲 {{ data.scheduled_meal }}</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Meal Integrity State</div>
@@ -238,7 +275,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Recent Audit Logs Timeline -->
+    <!-- Audit Log -->
     <div class="audit-panel">
         <div class="panel-header">
             <span>AUDIT LEDGER TIMELINE (EDGE TO CLOUD)</span>
@@ -268,7 +305,7 @@ HTML_TEMPLATE = """
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="6" style="text-align: center; color: #64748b; padding: 18px;">No audit records captured yet.</td>
+                        <td colspan="6" style="text-align: center; color: #64748b; padding: 18px;">No audit records captured yet. Run surveillance sync.</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -284,7 +321,7 @@ HTML_TEMPLATE = """
                 <span class="close-btn" onclick="closeLastSessionModal()">&times;</span>
             </div>
             {% if data.prev_session %}
-            <div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
+            <div style="font-size: 13px; line-height: 1.9; color: #cbd5e1; font-family: 'JetBrains Mono', monospace;">
                 <p><strong>Timestamp:</strong> {{ data.prev_session.timestamp }}</p>
                 <p><strong>Students Verified:</strong> {{ data.prev_session.students }}</p>
                 <p><strong>Meal Plates Count:</strong> {{ data.prev_session.plates }}</p>
@@ -292,7 +329,7 @@ HTML_TEMPLATE = """
                 <p><strong>Audit Status:</strong> <span style="color: #34d399; font-weight: bold;">{{ data.prev_session.status }}</span></p>
             </div>
             {% else %}
-            <p style="font-size: 13px; color: #94a3b8;">No prior meal cycle found in edge ledger.</p>
+            <p style="font-size: 13px; color: #94a3b8;">No prior meal session captured in ledger yet.</p>
             {% endif %}
         </div>
     </div>
@@ -401,32 +438,4 @@ def upload_frame():
 
 
 @app.route("/api/latest_image")
-def latest_image():
-    if os.path.exists(LATEST_FRAME_PATH):
-        return send_file(LATEST_FRAME_PATH, mimetype="image/jpeg")
-    fallback = os.path.join(BASE_DIR, "outputs", "detected.jpg")
-    if os.path.exists(fallback):
-        return send_file(fallback, mimetype="image/jpeg")
-    return jsonify({"status": "no image available"}), 404
-
-
-@app.route("/api/sync", methods=["POST"])
-def sync():
-    records = request.get_json()
-    if not records:
-        return jsonify({"status": "error", "message": "No data received"}), 400
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    for r in records:
-        cursor.execute("""
-            INSERT INTO meal_monitoring (timestamp, person_count, plate_count, scheduled_meal, meal_status, sync_status)
-            VALUES (?, ?, ?, ?, ?, 1)
-        """, (r["timestamp"], r["person_count"], r["plate_count"], r["scheduled_meal"], r["meal_status"]))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success", "synced_records": len(records)}), 200
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+def l
