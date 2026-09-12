@@ -1,3 +1,4 @@
+import sys
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -12,7 +13,7 @@ from plate_detector import detect_plates
 # -----------------------------
 
 PERSON_MODEL = "models/yolov8n.onnx"
-IMAGE_PATH = "images/midday.png"
+DEFAULT_IMAGE = "images/midday.png"
 OUTPUT_PATH = "outputs/detected.jpg"
 
 INPUT_SIZE = 640
@@ -20,9 +21,29 @@ CONF_THRESHOLD = 0.40
 NMS_THRESHOLD = 0.45
 
 
-# -----------------------------
-# PERSON DETECTION
-# -----------------------------
+def draw_label(image, text, x, y, color):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.55
+    thickness = 1
+    (text_w, text_h), _ = cv2.getTextSize(text, font, scale, thickness)
+
+    box_y1 = max(0, y - text_h - 8)
+    box_y2 = y
+    box_x1 = x
+    box_x2 = x + text_w + 8
+
+    cv2.rectangle(image, (box_x1, box_y1), (box_x2, box_y2), color, -1)
+    cv2.putText(
+        image,
+        text,
+        (box_x1 + 4, box_y2 - 4),
+        font,
+        scale,
+        (255, 255, 255),
+        thickness,
+        cv2.LINE_AA,
+    )
+
 
 def detect_persons(image, session, input_name):
     original_h, original_w = image.shape[:2]
@@ -34,7 +55,6 @@ def detect_persons(image, session, input_name):
     img = np.expand_dims(img, axis=0)
 
     output = session.run(None, {input_name: img})[0]
-
     predictions = output[0].T
 
     boxes = []
@@ -76,13 +96,12 @@ def detect_persons(image, session, input_name):
     return results
 
 
-# -----------------------------
-# MAIN
-# -----------------------------
-
 def main():
+    image_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_IMAGE
+
     print("--------------------------------")
     print("SIH MEAL MONITORING PIPELINE")
+    print(f"Target Image: {image_path}")
     print("--------------------------------")
 
     day_name, today_meal = get_today_meal()
@@ -92,9 +111,9 @@ def main():
     person_session = ort.InferenceSession(PERSON_MODEL)
     person_input = person_session.get_inputs()[0].name
 
-    image = cv2.imread(IMAGE_PATH)
+    image = cv2.imread(image_path)
     if image is None:
-        print("ERROR: Image not found:", IMAGE_PATH)
+        print("ERROR: Image not found:", image_path)
         return
 
     # 1. Person Detection
@@ -104,16 +123,8 @@ def main():
 
     for detection in person_results:
         x, y, w, h = detection["box"]
-        cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
-        cv2.putText(
-            image,
-            f"Person {detection['confidence']:.2f}",
-            (x, max(20, y - 5)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 0, 0),
-            2,
-        )
+        cv2.rectangle(image, (x, y), (x + w, y + h), (255, 100, 0), 2)
+        draw_label(image, f"Student {detection['confidence']:.2f}", x, y, (255, 100, 0))
 
     # 2. Plate Detection
     print("Detecting plates...")
@@ -122,16 +133,8 @@ def main():
 
     for detection in plate_results:
         x, y, w, h = detection["box"]
-        cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        cv2.putText(
-            image,
-            f"Plate {detection['confidence']:.2f}",
-            (x, max(20, y - 5)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 0),
-            2,
-        )
+        cv2.rectangle(image, (x, y), (x + w, y + h), (0, 180, 0), 2)
+        draw_label(image, f"Plate {detection['confidence']:.2f}", x, y, (0, 180, 0))
 
     # 3. Meal Verification
     meal_status = verify_meal(person_count, plate_count)
@@ -145,7 +148,21 @@ def main():
         meal_status=meal_status,
     )
 
-    # 5. Save Output Image
+    # 5. Header Summary Overlay
+    summary_text = f"Students: {person_count} | Plates: {plate_count} | Status: {meal_status}"
+    cv2.rectangle(image, (0, 0), (image.shape[1], 40), (20, 24, 33), -1)
+    cv2.putText(
+        image,
+        summary_text,
+        (15, 26),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    # 6. Save Output Image
     cv2.imwrite(OUTPUT_PATH, image)
     print("Output saved:", OUTPUT_PATH)
     print("--------------------------------")
