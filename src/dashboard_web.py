@@ -80,19 +80,25 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SIH Meal Monitoring</title>
+    <title>SIH Meal Monitoring - Live Video</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b1120; color: #f8fafc; margin: 0; padding: 16px; }
-        .header { text-align: center; margin-bottom: 24px; }
+        .header { text-align: center; margin-bottom: 20px; }
         .header h1 { margin: 0; font-size: 22px; color: #38bdf8; }
         .header p { margin: 4px 0 0 0; font-size: 12px; color: #94a3b8; }
         .container { max-width: 720px; margin: 0 auto; }
         
         .camera-card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 20px; border: 1px solid #334155; text-align: center; }
         .camera-card h3 { margin: 0 0 10px 0; font-size: 13px; color: #38bdf8; text-transform: uppercase; text-align: left; letter-spacing: 0.5px; }
-        .camera-feed { width: 100%; max-height: 400px; object-fit: contain; border-radius: 8px; background: #020617; border: 1px solid #475569; }
         
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        /* Video Element for Smooth 30FPS stream */
+        video#liveStream { width: 100%; max-height: 400px; border-radius: 8px; background: #020617; border: 1px solid #475569; transform: scaleX(1); }
+        
+        .controls { display: flex; gap: 10px; margin-top: 10px; }
+        .btn-stream { flex: 1; background: #059669; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        .btn-stop { flex: 1; background: #dc2626; color: white; border: none; padding: 10px; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; margin-top: 20px; }
         .card { background: #1e293b; border-radius: 10px; padding: 14px; border: 1px solid #334155; }
         .card h4 { margin: 0 0 6px 0; font-size: 11px; color: #94a3b8; text-transform: uppercase; }
         .card p { margin: 0; font-size: 22px; font-weight: bold; color: #f8fafc; }
@@ -102,7 +108,6 @@ HTML_TEMPLATE = """
         .section-value { font-size: 16px; font-weight: 600; }
         
         .btn { display: block; width: 100%; text-align: center; background: #2563eb; color: white; padding: 12px; border-radius: 8px; font-size: 14px; font-weight: 600; border: none; cursor: pointer; text-decoration: none; margin-top: 16px; }
-        .btn:active { background: #1d4ed8; }
         .footer { text-align: center; margin-top: 24px; font-size: 11px; color: #64748b; }
     </style>
 </head>
@@ -113,11 +118,15 @@ HTML_TEMPLATE = """
             <p>Intelligent Computer Vision System for Mid-Day Meal Monitoring</p>
         </div>
 
-        <!-- Live Camera Stream Visual -->
+        <!-- Real-time Live Video Stream Card -->
         <div class="camera-card">
-            <h3>Live Edge Camera Feed (AI Detections)</h3>
-            <img class="camera-feed" id="liveFrame" src="/api/latest_image" alt="Awaiting Live Edge Camera Stream...">
-            <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;">Auto-updates as continuous monitoring detects students & plates</p>
+            <h3>🔴 Real-Time Live Camera Feed</h3>
+            <video id="liveStream" autoplay playsinline muted></video>
+            <div class="controls">
+                <button class="btn-stream" onclick="startCamera()">Turn On Camera</button>
+                <button class="btn-stop" onclick="stopCamera()">Stop Camera</button>
+            </div>
+            <p id="camStatus" style="margin: 8px 0 0 0; font-size: 11px; color: #94a3b8;">Click 'Turn On Camera' to stream live video directly on website.</p>
         </div>
 
         <div class="grid">
@@ -156,21 +165,50 @@ HTML_TEMPLATE = """
             <div class="section-value" style="font-size: 13px; color: #cbd5e1;">{{ data.last_detection }}</div>
         </div>
 
-        <button class="btn" onclick="location.reload()">Refresh Dashboard</button>
+        <button class="btn" onclick="location.reload()">Refresh Data</button>
 
         <div class="footer">
-            Atul Goswami<br>Offline-first Meal Monitoring System
+            Atul Goswami<br>Edge AI Live Surveillance
         </div>
     </div>
 
     <script>
-        // Auto refresh image every 4 seconds
-        setInterval(function() {
-            var img = document.getElementById('liveFrame');
-            if (img) {
-                img.src = '/api/latest_image?t=' + new Date().getTime();
+        let streamObj = null;
+
+        async function startCamera() {
+            const video = document.getElementById('liveStream');
+            const status = document.getElementById('camStatus');
+            try {
+                // Constraints prioritize back camera for classroom monitoring
+                const constraints = {
+                    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                };
+                streamObj = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = streamObj;
+                status.innerText = "🟢 Camera live streaming smoothly (30 FPS)";
+                status.style.color = "#4ade80";
+            } catch (err) {
+                // Fallback for front camera if back camera not directly accessible
+                try {
+                    streamObj = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = streamObj;
+                    status.innerText = "🟢 Front camera live streaming";
+                    status.style.color = "#4ade80";
+                } catch (e) {
+                    status.innerText = "❌ Permission denied or camera unavailable: " + e.message;
+                    status.style.color = "#f87171";
+                }
             }
-        }, 4000);
+        }
+
+        function stopCamera() {
+            if (streamObj) {
+                streamObj.getTracks().forEach(track => track.stop());
+                document.getElementById('liveStream').srcObject = null;
+                document.getElementById('camStatus').innerText = "Camera stopped.";
+                document.getElementById('camStatus').style.color = "#94a3b8";
+            }
+        }
     </script>
 </body>
 </html>
@@ -197,7 +235,6 @@ def upload_frame():
 def latest_image():
     if os.path.exists(LATEST_FRAME_PATH):
         return send_file(LATEST_FRAME_PATH, mimetype="image/jpeg")
-    # Fallback to local outputs if exists
     fallback = os.path.join(BASE_DIR, "outputs", "detected.jpg")
     if os.path.exists(fallback):
         return send_file(fallback, mimetype="image/jpeg")
