@@ -80,7 +80,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SIH Meal Monitoring - Live Video</title>
+    <title>Atul's Meal Monitoring Project - Live Video</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b1120; color: #f8fafc; margin: 0; padding: 16px; }
         .header { text-align: center; margin-bottom: 20px; }
@@ -114,7 +114,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>SIH Meal Monitoring</h1>
+            <h1>Atul's Meal Monitoring Project</h1>
             <p>Intelligent Computer Vision System for Mid-Day Meal Monitoring</p>
         </div>
 
