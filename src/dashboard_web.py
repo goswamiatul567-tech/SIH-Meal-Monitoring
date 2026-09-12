@@ -1,6 +1,8 @@
+import csv
+import io
 import os
 import sqlite3
-from flask import Flask, jsonify, render_template_string, request, send_file
+from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
 app = Flask(__name__)
 
@@ -45,33 +47,32 @@ def get_dashboard_data():
     cursor.execute("SELECT COUNT(*) FROM meal_monitoring WHERE meal_status = 'MEAL_VERIFIED'")
     successful_meals = cursor.fetchone()[0] or 0
 
-    # Fetch last 5 audit logs
-    cursor.execute("SELECT id, timestamp, person_count, plate_count, scheduled_meal, meal_status, sync_status FROM meal_monitoring ORDER BY id DESC LIMIT 5")
+    # Fetch last 8 audit logs
+    cursor.execute("SELECT id, timestamp, person_count, plate_count, scheduled_meal, meal_status, sync_status FROM meal_monitoring ORDER BY id DESC LIMIT 8")
     recent_logs = cursor.fetchall()
+
+    # Fetch last recorded session (previous record)
+    cursor.execute("SELECT timestamp, person_count, plate_count, scheduled_meal, meal_status FROM meal_monitoring ORDER BY id DESC LIMIT 1 OFFSET 1")
+    prev_session = cursor.fetchone()
 
     conn.close()
 
-    if last_record:
-        return {
-            "students_detected": last_record[0],
-            "plates_detected": last_record[1],
-            "scheduled_meal": last_record[2],
-            "meal_status": last_record[3],
-            "last_detection": last_record[4],
-            "total_students": total_students,
-            "successful_meals": successful_meals,
-            "recent_logs": recent_logs,
-        }
-
     return {
-        "students_detected": 0,
-        "plates_detected": 0,
-        "scheduled_meal": "Not specified",
-        "meal_status": "AWAITING DATA",
-        "last_detection": "No detection yet",
-        "total_students": 0,
-        "successful_meals": 0,
-        "recent_logs": [],
+        "students_detected": last_record[0] if last_record else 0,
+        "plates_detected": last_record[1] if last_record else 0,
+        "scheduled_meal": last_record[2] if last_record else "Not specified",
+        "meal_status": last_record[3] if last_record else "AWAITING DATA",
+        "last_detection": last_record[4] if last_record else "No detection yet",
+        "total_students": total_students,
+        "successful_meals": successful_meals,
+        "recent_logs": recent_logs,
+        "prev_session": {
+            "timestamp": prev_session[0],
+            "students": prev_session[1],
+            "plates": prev_session[2],
+            "meal": prev_session[3],
+            "status": prev_session[4]
+        } if prev_session else None
     }
 
 
@@ -87,7 +88,6 @@ HTML_TEMPLATE = """
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Inter', -apple-system, sans-serif; background: #090d16; color: #f1f5f9; min-height: 100vh; padding: 20px 16px; }
         
-        /* Top Navigation Header */
         .header-bar {
             background: rgba(15, 23, 42, 0.85);
             backdrop-filter: blur(12px);
@@ -99,122 +99,73 @@ HTML_TEMPLATE = """
             align-items: center;
             max-width: 1100px;
             margin: 0 auto 20px auto;
+            position: relative;
         }
         .header-title { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; letter-spacing: 0.5px; color: #f8fafc; }
         .live-dot { width: 10px; height: 10px; background: #ef4444; border-radius: 50%; box-shadow: 0 0 10px #ef4444; animation: pulse 1.8s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
-        .header-meta { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #94a3b8; }
-        .badge-active { background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(16, 185, 129, 0.3); }
+        
+        .header-right { display: flex; align-items: center; gap: 14px; }
+        .badge-active { background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(16, 185, 129, 0.3); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 
-        /* Main Workspace Split Grid */
-        .workspace {
-            display: grid;
-            grid-template-columns: 1.4fr 1fr;
-            gap: 20px;
-            max-width: 1100px;
-            margin: 0 auto 20px auto;
+        /* 3-Dot Dropdown */
+        .menu-btn { background: transparent; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+        .menu-btn:hover { background: rgba(255, 255, 255, 0.08); color: white; }
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            right: 20px;
+            top: 55px;
+            background: #1e293b;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            min-width: 220px;
+            z-index: 100;
         }
+        .dropdown-content a {
+            color: #cbd5e1;
+            padding: 10px 14px;
+            text-decoration: none;
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            cursor: pointer;
+        }
+        .dropdown-content a:hover { background: rgba(56, 189, 248, 0.1); color: #38bdf8; }
+
+        /* Main Workspace */
+        .workspace { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; max-width: 1100px; margin: 0 auto 20px auto; }
         @media (max-width: 850px) { .workspace { grid-template-columns: 1fr; } }
 
-        /* Left Surveillance Panel */
-        .panel {
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 14px;
-            padding: 18px;
-            display: flex;
-            flex-direction: column;
-        }
-        .panel-header {
-            font-size: 11px;
-            font-family: 'JetBrains Mono', monospace;
-            text-transform: uppercase;
-            color: #38bdf8;
-            letter-spacing: 1px;
-            margin-bottom: 12px;
-            display: flex;
-            justify-content: space-between;
-        }
-        .video-container {
-            position: relative;
-            background: #020617;
-            border-radius: 10px;
-            overflow: hidden;
-            border: 1px solid #1e293b;
-            aspect-ratio: 16/9;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
+        .panel { background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; }
+        .panel-header { font-size: 11px; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; color: #38bdf8; letter-spacing: 1px; margin-bottom: 12px; display: flex; justify-content: space-between; }
+        
+        .video-container { position: relative; background: #020617; border-radius: 10px; overflow: hidden; border: 1px solid #1e293b; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
         video#liveStream { width: 100%; height: 100%; object-fit: cover; }
-        .hud-overlay {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
-            background: rgba(0, 0, 0, 0.65);
-            padding: 4px 8px;
-            border-radius: 4px;
-            color: #38bdf8;
-            border: 1px solid rgba(56, 189, 248, 0.3);
-        }
+        .hud-overlay { position: absolute; top: 10px; left: 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; background: rgba(0, 0, 0, 0.65); padding: 4px 8px; border-radius: 4px; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
 
         .controls { display: flex; gap: 10px; margin-top: 14px; }
-        .btn-stream {
-            flex: 1;
-            background: #10b981;
-            color: #042f2e;
-            font-weight: 700;
-            font-size: 13px;
-            padding: 10px;
-            border-radius: 6px;
-            border: none;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        .btn-stream:hover { background: #34d399; }
-        .btn-stop {
-            flex: 1;
-            background: rgba(239, 68, 68, 0.15);
-            color: #f87171;
-            font-weight: 700;
-            font-size: 13px;
-            padding: 10px;
-            border-radius: 6px;
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            cursor: pointer;
-        }
+        .btn-stream { flex: 1; background: #10b981; color: #042f2e; font-weight: 700; font-size: 13px; padding: 10px; border-radius: 6px; border: none; cursor: pointer; }
+        .btn-stop { flex: 1; background: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: 700; font-size: 13px; padding: 10px; border-radius: 6px; border: 1px solid rgba(239, 68, 68, 0.3); cursor: pointer; }
         .status-txt { font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; margin-top: 8px; text-align: center; }
 
-        /* Right Telemetry Panel */
         .telemetry-grid { display: flex; flex-direction: column; gap: 12px; }
-        .metric-card {
-            background: rgba(30, 41, 59, 0.5);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 14px 16px;
-        }
+        .metric-card { background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 10px; padding: 14px 16px; }
         .metric-label { font-size: 11px; text-transform: uppercase; color: #94a3b8; font-family: 'JetBrains Mono', monospace; margin-bottom: 4px; }
         .metric-val { font-size: 24px; font-weight: 700; color: #f8fafc; }
         .metric-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+        .metric-status { font-size: 16px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: {% if data.meal_status == 'MEAL_VERIFIED' %}#34d399{% else %}#f87171{% endif %}; }
 
-        .metric-status {
-            font-size: 16px;
-            font-weight: 700;
-            font-family: 'JetBrains Mono', monospace;
-            color: {% if data.meal_status == 'MEAL_VERIFIED' %}#34d399{% else %}#f87171{% endif %};
-        }
+        /* Modal styling */
+        .modal { display: none; position: fixed; z-index: 200; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
+        .modal-content { background: #1e293b; margin: 10% auto; padding: 24px; border-radius: 12px; max-width: 480px; border: 1px solid rgba(255,255,255,0.1); }
+        .modal-header { font-size: 16px; font-weight: 700; color: #38bdf8; margin-bottom: 16px; display: flex; justify-content: space-between; }
+        .close-btn { color: #94a3b8; cursor: pointer; font-size: 18px; }
 
-        /* Bottom Audit Log Timeline */
-        .audit-panel {
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 14px;
-            padding: 18px;
-            max-width: 1100px;
-            margin: 0 auto;
-        }
+        /* Bottom Audit Log */
+        .audit-panel { background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; padding: 18px; max-width: 1100px; margin: 0 auto; }
         .table-wrap { overflow-x: auto; margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: left; }
         th { color: #64748b; font-weight: 600; padding: 10px 8px; border-bottom: 1px solid #1e293b; text-transform: uppercase; font-size: 11px; }
@@ -224,42 +175,45 @@ HTML_TEMPLATE = """
 </head>
 <body>
 
-    <!-- Header -->
     <div class="header-bar">
         <div class="header-title">
             <div class="live-dot"></div>
             ATUL'S MEAL MONITORING SYSTEM
         </div>
-        <div class="header-meta">
-            STATUS: <span class="badge-active">ONLINE</span> &nbsp;|&nbsp; UNIT #01
+        <div class="header-right">
+            <span class="badge-active">ACTIVE • UNIT #01</span>
+            <button class="menu-btn" onclick="toggleMenu()">⋮</button>
+            <div id="dropdownMenu" class="dropdown-content">
+                <a onclick="openLastSessionModal()">📑 View Last Session Report</a>
+                <a href="/api/export_csv">📥 Export Audit Logs (CSV)</a>
+                <a onclick="alert('Threshold: Confidence 0.40 | IoU 0.45 (Optimal Edge NMS)')">⚙️ Model Parameters</a>
+                <a onclick="location.reload()">🔄 Force Telemetry Sync</a>
+            </div>
         </div>
     </div>
 
-    <!-- Main Section: Stream (Left) + Telemetry (Right) -->
+    <!-- Main Workspace -->
     <div class="workspace">
-        
-        <!-- Live Surveillance -->
         <div class="panel">
             <div class="panel-header">
                 <span>LIVE SURVEILLANCE FEED</span>
-                <span style="color: #94a3b8;">WEBCAM 30 FPS</span>
+                <span style="color: #94a3b8;">30 FPS WEBCAM</span>
             </div>
             <div class="video-container">
                 <video id="liveStream" autoplay playsinline muted></video>
-                <div class="hud-overlay" id="hudTag">STREAM OFFLINE</div>
+                <div class="hud-overlay" id="hudTag">STREAM READY</div>
             </div>
             <div class="controls">
                 <button class="btn-stream" onclick="startCamera()">START STREAM</button>
                 <button class="btn-stop" onclick="stopCamera()">STOP</button>
             </div>
-            <div class="status-txt" id="camStatus">Click 'START STREAM' to broadcast live video feed</div>
+            <div class="status-txt" id="camStatus">Ready to capture live classroom frames</div>
         </div>
 
-        <!-- Real-Time Telemetry -->
         <div class="panel">
             <div class="panel-header">
                 <span>REAL-TIME TELEMETRY</span>
-                <span style="color: #94a3b8;">AUTO-REFRESH</span>
+                <span style="color: #94a3b8;">EDGE SYNCED</span>
             </div>
             <div class="telemetry-grid">
                 <div class="metric-card">
@@ -270,7 +224,7 @@ HTML_TEMPLATE = """
                 <div class="metric-card">
                     <div class="metric-label">Plates Monitored</div>
                     <div class="metric-val">{{ data.plates_detected }}</div>
-                    <div class="metric-sub">Served count verification</div>
+                    <div class="metric-sub">Physical plate validation</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Scheduled Menu (Today)</div>
@@ -282,13 +236,12 @@ HTML_TEMPLATE = """
                 </div>
             </div>
         </div>
-
     </div>
 
     <!-- Recent Audit Logs Timeline -->
     <div class="audit-panel">
         <div class="panel-header">
-            <span>RECENT AUDIT LOG TIMELINE (SQLITE SYNC ENGINE)</span>
+            <span>AUDIT LEDGER TIMELINE (EDGE TO CLOUD)</span>
             <span style="cursor: pointer; color: #38bdf8;" onclick="location.reload()">[REFRESH]</span>
         </div>
         <div class="table-wrap">
@@ -299,8 +252,8 @@ HTML_TEMPLATE = """
                         <th>Timestamp</th>
                         <th>Students</th>
                         <th>Plates</th>
-                        <th>Integrity</th>
-                        <th>Sync Engine</th>
+                        <th>Meal Integrity</th>
+                        <th>Edge Persistence</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -323,23 +276,62 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- Modal for Last Session -->
+    <div id="sessionModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span>PREVIOUS MEAL SESSION AUDIT</span>
+                <span class="close-btn" onclick="closeLastSessionModal()">&times;</span>
+            </div>
+            {% if data.prev_session %}
+            <div style="font-size: 13px; line-height: 1.8; color: #cbd5e1;">
+                <p><strong>Timestamp:</strong> {{ data.prev_session.timestamp }}</p>
+                <p><strong>Students Verified:</strong> {{ data.prev_session.students }}</p>
+                <p><strong>Meal Plates Count:</strong> {{ data.prev_session.plates }}</p>
+                <p><strong>Menu Served:</strong> {{ data.prev_session.meal }}</p>
+                <p><strong>Audit Status:</strong> <span style="color: #34d399; font-weight: bold;">{{ data.prev_session.status }}</span></p>
+            </div>
+            {% else %}
+            <p style="font-size: 13px; color: #94a3b8;">No prior meal cycle found in edge ledger.</p>
+            {% endif %}
+        </div>
+    </div>
+
     <script>
         let streamObj = null;
+
+        function toggleMenu() {
+            var m = document.getElementById('dropdownMenu');
+            m.style.display = m.style.display === 'block' ? 'none' : 'block';
+        }
+
+        window.onclick = function(e) {
+            if (!e.target.matches('.menu-btn')) {
+                var dropdowns = document.getElementsByClassName("dropdown-content");
+                for (var i = 0; i < dropdowns.length; i++) {
+                    dropdowns[i].style.display = "none";
+                }
+            }
+        }
+
+        function openLastSessionModal() {
+            document.getElementById('sessionModal').style.display = 'block';
+        }
+        function closeLastSessionModal() {
+            document.getElementById('sessionModal').style.display = 'none';
+        }
 
         async function startCamera() {
             const video = document.getElementById('liveStream');
             const hud = document.getElementById('hudTag');
             const status = document.getElementById('camStatus');
             try {
-                const constraints = {
-                    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
-                };
+                const constraints = { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } };
                 streamObj = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = streamObj;
                 hud.innerText = "● LIVE (30 FPS)";
                 hud.style.color = "#34d399";
-                hud.style.borderColor = "rgba(52, 211, 153, 0.4)";
-                status.innerText = "Camera stream connected successfully.";
+                status.innerText = "Surveillance stream active.";
                 status.style.color = "#34d399";
             } catch (err) {
                 try {
@@ -359,9 +351,9 @@ HTML_TEMPLATE = """
             if (streamObj) {
                 streamObj.getTracks().forEach(track => track.stop());
                 document.getElementById('liveStream').srcObject = null;
-                document.getElementById('hudTag').innerText = "STREAM OFFLINE";
+                document.getElementById('hudTag').innerText = "STREAM READY";
                 document.getElementById('hudTag').style.color = "#38bdf8";
-                document.getElementById('camStatus').innerText = "Camera feed terminated.";
+                document.getElementById('camStatus').innerText = "Camera stream stopped.";
                 document.getElementById('camStatus').style.color = "#94a3b8";
             }
         }
@@ -375,6 +367,27 @@ HTML_TEMPLATE = """
 def index():
     data = get_dashboard_data()
     return render_template_string(HTML_TEMPLATE, data=data)
+
+
+@app.route("/api/export_csv")
+def export_csv():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id, timestamp, person_count, plate_count, scheduled_meal, meal_status FROM meal_monitoring ORDER BY id DESC")
+    rows = cur.fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Log_ID", "Timestamp", "Students_Detected", "Plates_Detected", "Scheduled_Meal", "Integrity_Status"])
+    for r in rows:
+        writer.writerow(r)
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment;filename=midday_meal_audit_logs.csv"}
+    )
 
 
 @app.route("/api/upload_frame", methods=["POST"])
